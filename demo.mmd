@@ -1,0 +1,51 @@
+---
+config:
+  layout: elk
+  look: classic
+  theme: base
+  elk:
+    mergeEdges: false
+    nodePlacementStrategy: NETWORK_SIMPLEX
+  themeVariables:
+    fontFamily: "PingFang SC, Hiragino Sans GB, Microsoft YaHei, sans-serif"
+    fontSize: "13px"
+    lineColor: "#94a3b8"
+    edgeLabelBackground: "#f8f8fc"
+  flowchart:
+    nodeSpacing: 45
+    rankSpacing: 55
+    padding: 12
+    wrappingWidth: 360
+---
+flowchart TD
+  A["📝 填写注册表单"]:::blue
+  B{"邮箱格式校验"}:::orange
+  C["📧 发送验证码"]:::blue
+  D{"验证码正确？"}:::orange
+  E["✅ 创建账号成功"]:::green
+  F["🏠 跳转首页"]:::green
+  G["重发验证码（第N次）"]:::blue
+  H{"重发次数<br/>超过3次？"}:::orange
+  I["🔒 锁定账号10分钟"]:::red
+  J["⏳ 等待解锁"]:::gray
+
+  A --> B
+  B -->|"格式错误"| A
+  B -->|"格式正确"| C
+  C --> D
+  D -->|"正确"| E
+  E --> F
+  D -->|"错误"| G
+  G --> H
+  H -->|"否"| C
+  H -->|"是"| I
+  I --> J
+  J -.->|"10分钟后"| C
+
+  classDef blue fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+  classDef orange fill:#ffedd5,stroke:#ea580c,color:#7c2d12
+  classDef green fill:#dcfce7,stroke:#16a34a,color:#14532d
+  classDef red fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:3px
+  classDef gray fill:#f1f5f9,stroke:#94a3b8,color:#64748b
+
+  linkStyle 5 stroke:#dc2626,stroke-width:2px

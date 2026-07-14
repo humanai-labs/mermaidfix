@@ -1,0 +1,224 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"><title>mermaidfix</title>
+<style>
+  body { margin:0; display:flex; height:100vh; font-family:-apple-system,"PingFang SC",sans-serif }
+  #left { width:34%; min-width:300px; display:flex; flex-direction:column; border-right:1px solid #e2e8f0 }
+  #bar { padding:8px 12px; display:flex; gap:8px; align-items:center; border-bottom:1px solid #e2e8f0; font-size:13px }
+  #src { flex:1; border:0; outline:none; padding:12px; font:12px/1.55 "SF Mono",Menlo,monospace; resize:none; color:#1e293b }
+  #err { color:#dc2626; font-size:12px; padding:6px 12px; white-space:pre-wrap; display:none; border-top:1px solid #fecaca; background:#fef2f2; max-height:30vh; overflow:auto }
+  #board { flex:1; position:relative }
+  button, select { font-size:12px; padding:4px 10px; border:1px solid #cbd5e1; border-radius:6px; background:#fff; cursor:pointer }
+  button:hover { background:#f1f5f9 }
+  select { max-width:180px; font-weight:600 }
+  #status { color:#64748b; margin-left:auto }
+</style>
+<script>window.EXCALIDRAW_ASSET_PATH = 'https://cdn.jsdelivr.net/npm/@excalidraw/excalidraw@0.17.6/dist/';</script>
+<script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@excalidraw/excalidraw@0.17.6/dist/excalidraw.production.min.js"></script>
+</head>
+<body>
+<div id="left">
+  <div id="bar">
+    <select id="fname"></select>
+    <button id="save">保存 ⌘S</button>
+    <button id="copy">复制代码</button>
+    <button id="detach">转可编辑</button>
+    <button id="clear">重置画板</button>
+    <span id="status"></span>
+  </div>
+  <textarea id="src" spellcheck="false"></textarea>
+  <div id="err"></div>
+</div>
+<div id="board"></div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  import elkLayouts from 'https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0/dist/mermaid-layout-elk.esm.min.mjs';
+  mermaid.registerLayoutLoaders(elkLayouts);
+  mermaid.initialize({ startOnLoad: false });
+
+  const file = new URLSearchParams(location.search).get('f') || 'roadmap.mmd';
+  const $ = id => document.getElementById(id);
+  document.title = 'mermaidfix · ' + file;
+  const names = await fetch('/list').then(r => r.json()).catch(() => [file]);
+  $('fname').innerHTML = (names.includes(file) ? names : [file, ...names])
+    .map(n => `<option value="${n}" ${n === file ? 'selected' : ''}>${n}</option>`).join('');
+  $('fname').onchange = () => location.href = '?f=' + encodeURIComponent($('fname').value);
+  $('src').value = await (await fetch('./' + file + '?ts=' + Date.now())).text();
+
+  // ---------- Excalidraw 画布:mermaid 图 = 锁定底图,笔迹画在上层 ----------
+  const drawKey = 'draw:' + file;
+  const detachKey = 'detach:' + file;
+  let api = null, baseId = null, fileSeq = 0, pendingSvg = null, fitted = false, ready = false;
+  let detached = localStorage.getItem(detachKey) === '1'; // 可编辑模式:图已转元素,不再灌底图
+
+  function applySvg(svg) {
+    // mermaid 返回 HTML 序列化的字符串(<br> 不闭合等),<img> 按严格 XML 解析会炸;
+    // 经 DOM 走一遍 XMLSerializer 拿到合规 XML,并给出绝对尺寸
+    const tmp = document.createElement('div');
+    tmp.innerHTML = svg;
+    const node = tmp.querySelector('svg');
+    const vb = node.viewBox?.baseVal;
+    const w = vb?.width || parseFloat(node.getAttribute('width')) || 800;
+    const h = vb?.height || parseFloat(node.getAttribute('height')) || 600;
+    node.setAttribute('width', w);
+    node.setAttribute('height', h);
+    const xml = new XMLSerializer().serializeToString(node);
+    const fileId = 'mf' + (++fileSeq);
+    const dataURL = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(xml)));
+    api.addFiles([{ id: fileId, mimeType: 'image/svg+xml', dataURL, created: Date.now() }]);
+    const others = api.getSceneElements().filter(el => el.id !== baseId);
+    const base = ExcalidrawLib.convertToExcalidrawElements(
+      [{ type: 'image', fileId, x: 0, y: 0, width: w, height: h, locked: true }])[0];
+    baseId = base.id;
+    api.updateScene({ elements: [base, ...others] });
+    if (!fitted) {
+      fitted = true;
+      try { api.scrollToContent(undefined, { fitToViewport: true, viewportZoomFactor: 0.9 }); } catch {}
+    }
+  }
+
+  let persistTimer;
+  function persist(els) {
+    clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => {
+      const drawn = els.filter(e => e.id !== baseId && !e.isDeleted);
+      if (drawn.length) localStorage.setItem(drawKey, JSON.stringify(drawn));
+      else localStorage.removeItem(drawKey);
+    }, 500);
+  }
+
+  const App = () => React.createElement(ExcalidrawLib.Excalidraw, {
+    excalidrawAPI: a => {
+      // 组件首帧挂载前 updateScene 会被初始化覆盖,推迟两帧再灌底图和笔迹
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        api = a; window._api = a;
+        const saved = JSON.parse(localStorage.getItem(drawKey) || '[]');
+        if (saved.length) api.updateScene({ elements: saved });
+        if (pendingSvg) { applySvg(pendingSvg); pendingSvg = null; }
+        ready = true; // 此后才允许持久化,防初始化空场景覆盖存档
+      }));
+    },
+    onChange: els => { if (ready) persist(els); },
+    langCode: 'zh-CN',
+    initialData: { appState: { viewBackgroundColor: '#ffffff' } },
+  });
+  ReactDOM.createRoot($('board')).render(React.createElement(App));
+
+  // 转可编辑:mermaid → 原生画板元素(官方 mermaid-to-excalidraw),双击改字/改色/拖动;
+  // 转换是拷贝,与左侧代码脱钩;笔迹保留,底图移除
+  $('detach').onclick = async () => {
+    if (detached) { $('status').textContent = '已是可编辑模式(重置画板可回底图)'; return; }
+    $('status').textContent = '转换中…(首次需加载转换库)';
+    try {
+      const { parseMermaidToExcalidraw } =
+        await import('https://esm.sh/@excalidraw/mermaid-to-excalidraw@1.1.0');
+      const bare = $('src').value.replace(/^---\n[\s\S]*?\n---\n/, ''); // 剥 frontmatter,转换器不认 elk
+      const { elements, files } = await parseMermaidToExcalidraw(bare, { fontSize: 14 });
+      const converted = ExcalidrawLib.convertToExcalidrawElements(elements);
+      if (files) api.addFiles(Object.values(files));
+      const drawings = api.getSceneElements().filter(el => el.id !== baseId);
+      api.updateScene({ elements: [...converted, ...drawings] });
+      baseId = null;
+      detached = true; localStorage.setItem(detachKey, '1');
+      try { api.scrollToContent(undefined, { fitToViewport: true, viewportZoomFactor: 0.9 }); } catch {}
+      $('status').textContent = '已转可编辑:双击改字,选中改色/字号';
+    } catch (e) {
+      $('status').textContent = '转换失败: ' + String(e.message || e).slice(0, 60);
+    }
+  };
+
+  $('clear').onclick = () => {
+    localStorage.removeItem(drawKey);
+    localStorage.removeItem(detachKey);
+    detached = false; baseId = null; fitted = false;
+    api.updateScene({ elements: [] });
+    render(); // 底图模式回归
+  };
+
+  // 数字键重映射:1=拖拽手 2=选择 3=矩形 4=菱形 5=圆(Excalidraw 硬编码 1=选择…,
+  // capture 层拦下自己派发;字母快捷键 H/V/R/D/O 等不受影响)
+  const KEYMAP = { '1': 'hand', '2': 'selection', '3': 'rectangle', '4': 'diamond', '5': 'ellipse' };
+  addEventListener('keydown', e => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (!api || !(e.key in KEYMAP)) return;
+    if (e.target.closest?.('input, textarea, [contenteditable="true"]')) return;
+    e.preventDefault(); e.stopPropagation();
+    api.setActiveTool({ type: KEYMAP[e.key] });
+  }, true);
+
+  // 工具栏数字角标同步改成重映射后的键位(按 data-testid 定位,幂等)
+  function fixBadges() {
+    const sampleParent = document.querySelector('[data-testid="toolbar-selection"]')
+      ?.closest('label')?.querySelector('.ToolIcon__keybinding')?.parentElement;
+    if (!sampleParent) return;
+    for (const [tool, txt] of [['hand','1'], ['selection','2'], ['rectangle','3'],
+                               ['diamond','4'], ['ellipse','5'], ['arrow','']]) {
+      const label = document.querySelector(`[data-testid="toolbar-${tool}"]`)?.closest('label');
+      if (!label) continue;
+      let k = label.querySelector('.ToolIcon__keybinding');
+      if (!k) {
+        k = document.createElement('span');
+        k.className = sampleParent.querySelector('.ToolIcon__keybinding')?.className || 'ToolIcon__keybinding';
+        (label.querySelector('.' + sampleParent.classList[0]) || label).appendChild(k);
+      }
+      k.textContent = txt;
+    }
+  }
+  setTimeout(fixBadges, 1200);
+  setTimeout(fixBadges, 3500); // locale 异步加载可能重绘 toolbar,再补一次
+
+  // ---------- 渲染管线(错误时保留上一张好图) ----------
+  let seq = 0, timer, dirty = false;
+  async function render() {
+    const id = 'g' + (++seq);
+    try {
+      const { svg } = await mermaid.render(id, $('src').value);
+      if (!detached) { api ? applySvg(svg) : pendingSvg = svg; } // 可编辑模式下只做语法校验
+      $('err').style.display = 'none';
+    } catch (e) {
+      $('err').textContent = e.message;
+      $('err').style.display = 'block';
+      document.getElementById(id)?.remove();
+      document.getElementById('d' + id)?.remove();
+    }
+  }
+  $('src').addEventListener('input', () => {
+    dirty = true;
+    $('status').textContent = '未保存';
+    clearTimeout(timer); timer = setTimeout(render, 400);
+  });
+
+  async function save() {
+    const r = await fetch('/save', { method: 'POST', body: JSON.stringify({ file, code: $('src').value }) });
+    dirty = !r.ok;
+    if (r.ok) diskCache = $('src').value;
+    $('status').textContent = r.ok ? '已保存 ' + new Date().toLocaleTimeString() : '保存失败(serve.py 没在跑?)';
+  }
+  $('save').onclick = save;
+  addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); save(); }
+  });
+  addEventListener('beforeunload', e => { if (dirty) e.preventDefault(); });
+  $('copy').onclick = async () => {
+    await navigator.clipboard.writeText($('src').value);
+    $('status').textContent = '已复制';
+  };
+  render();
+
+  // 轮询磁盘:CLI 先落占位图再让 AI 覆写,这里把成品自动换上来;有未保存编辑时不打扰
+  let diskCache = $('src').value;
+  setInterval(async () => {
+    try {
+      const remote = await (await fetch('./' + file + '?ts=' + Date.now())).text();
+      if (remote !== diskCache) {
+        diskCache = remote;
+        if (!dirty) { $('src').value = remote; render(); }
+      }
+    } catch {}
+  }, 2000);
+</script>
+</body>
+</html>
