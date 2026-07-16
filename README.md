@@ -12,10 +12,12 @@ One command from plain language to a beautiful Mermaid diagram, on an Excalidraw
 - **One-line CLI** — `mermaid <anything>`: natural language → AI generates a diagram; ugly Mermaid code → AI restyles it (semantics untouched, original kept as `*-raw.mmd`); a file path works too, and fenced ` ```mermaid ` blocks inside Markdown are extracted automatically.
 - **Opinionated visual recipe** — ELK layout, classic look, light-fill/colored-stroke palette, red critical paths, dashed weak edges. No more hand-drawn scribble on white.
 - **Instant feedback** — the browser opens immediately with a placeholder; the page polls and swaps in the finished diagram automatically (~8-14s with thinking disabled).
+- **Self-healing render** — AI occasionally emits code that parses but crashes at render time (e.g. out-of-range `linkStyle`). The page detects it, sends code+error back to the AI for a minimal fix, and re-renders — automatic for disk-loaded content (once), manual "让 AI 修" button anytime. Your own mid-typing syntax errors are never auto-"fixed".
 - **Live editor** — left pane edits code with 400ms re-render; syntax errors show in a bar without killing the last good render; ⌘S writes back to the `.mmd` file.
 - **Excalidraw canvas** — the diagram sits as a locked base image on a real Excalidraw board: zoom, pan, draw, annotate, full toolbar. Annotations persist per-file across reloads. Key remap: `1`=hand, `2`=select, `3`=rect, `4`=diamond, `5`=ellipse.
 - **Convert to editable** — one click turns the diagram into native Excalidraw elements: double-click to edit text, recolor, resize, drag nodes around (powered by the official mermaid-to-excalidraw).
 - **History** — every run saved as a timestamped `.mmd`, switchable from a dropdown, with raw originals for comparison.
+- **Ask-about-the-diagram chat** — a side drawer where you ask questions about the current diagram (flow logic, node relations, syntax). Answer-only by design: it has no editing power and redirects change requests to the editor/CLI. Streaming replies, multi-turn with per-file persistence, and a "think harder" toggle for tricky questions. The API key stays server-side (`serve.py` proxies `/chat`).
 
 ## Quick start
 
@@ -66,6 +68,8 @@ Config (`config.json`, git-ignored):
 - **Excalidraw 画板** — 图作为锁定底图,缩放/平移/全套画笔标注;笔迹按文件持久化;数字键重映射:`1`=拖拽手 `2`=选择 `3`=矩形 `4`=菱形 `5`=圆。
 - **转可编辑** — 一键把图转成原生画板元素:双击改字、改色、改字号、拖动节点(官方 mermaid-to-excalidraw)。
 - **历史留存** — 每次运行存时间戳 `.mmd`,页面下拉可切历史与 raw 原稿对照。
+- **对话解惑** — 右侧抽屉针对当前图提问(流程含义/节点关系/语法);**只答不改**,要改图它会指路编辑器或 CLI。流式回答、多轮记忆按文件持久化、「深想」开关应对难题;key 只在服务端(`serve.py` 代理 `/chat`)。
+- **渲染自愈** — AI 偶发产出"能解析、渲染才崩"的代码(如 linkStyle 越界);页面检测到后自动把代码+报错回炉给 AI 最小修复并写回(磁盘内容限一次),错误条上有「让 AI 修」手动按钮;你手动编辑中的语法错误不会被自动"修"。
 
 ### 快速开始
 

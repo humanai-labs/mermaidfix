@@ -54,6 +54,7 @@ config:
    橙 fill:#ffedd5,stroke:#ea580c,color:#7c2d12   绿 fill:#dcfce7,stroke:#16a34a,color:#14532d
    紫 fill:#ede9fe,stroke:#8b5cf6,color:#4c1d95   灰 fill:#f1f5f9,stroke:#94a3b8,color:#64748b(完成/弱化)
 3. 语义分层:关键路径/阻塞链用 linkStyle 标红加粗(stroke:#dc2626,stroke-width:2px);参照/弱关系用虚线 -.->;subgraph 用 style 上极淡底色(#eff6ff/#fff7ed/#f0fdf4/#faf5ff 系)+ 同系浅描边。
+   ⚠ linkStyle 索引从 0 计数、必须严格小于边总数——写之前先数清楚有几条边,宁可少标不要越界(越界 = 渲染直接崩)。class/style 只能引用已定义的节点 ID。
 4. 节点文字用 <br/> 控制在两行以内;重复语义的边标签只保留一条;subgraph 标题带一个贴切 emoji;字符串 label 一律用双引号包裹。
 5. 输出必须语法合法,能被 mermaid v11 直接渲染。'''
 

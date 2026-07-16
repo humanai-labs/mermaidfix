@@ -13,6 +13,22 @@
   button:hover { background:#f1f5f9 }
   select { max-width:180px; font-weight:600 }
   #status { color:#64748b; margin-left:auto }
+  /* 解惑抽屉 */
+  #chat { position:absolute; top:0; right:0; bottom:0; width:380px; background:#fff;
+          border-left:1px solid #e2e8f0; box-shadow:-4px 0 16px rgba(0,0,0,.08); z-index:20;
+          display:flex; flex-direction:column; transform:translateX(100%); transition:transform .2s }
+  #chat.open { transform:none }
+  #chat-head { padding:10px 14px; border-bottom:1px solid #e2e8f0; display:flex; align-items:center; gap:8px; font-size:13px }
+  #chat-head b { margin-right:auto }
+  #chat-msgs { flex:1; overflow:auto; padding:12px; display:flex; flex-direction:column; gap:10px }
+  .msg { max-width:88%; padding:8px 11px; border-radius:10px; font-size:13px; line-height:1.6; white-space:pre-wrap; word-break:break-word }
+  .msg.user { align-self:flex-end; background:#dbeafe; color:#1e3a8a }
+  .msg.ai { align-self:flex-start; background:#f1f5f9; color:#1e293b }
+  .msg.err { align-self:flex-start; background:#fef2f2; color:#dc2626; border:1px solid #fecaca }
+  #chat-foot { border-top:1px solid #e2e8f0; padding:10px 12px; display:flex; flex-direction:column; gap:6px }
+  #chat-in { border:1px solid #cbd5e1; border-radius:8px; padding:8px 10px; font:13px/1.5 inherit; resize:none; min-height:38px; max-height:120px; outline:none }
+  #chat-ops { display:flex; align-items:center; gap:10px; font-size:12px; color:#475569 }
+  #chat-ops label { display:flex; align-items:center; gap:4px; cursor:pointer }
 </style>
 <script>window.EXCALIDRAW_ASSET_PATH = 'https://cdn.jsdelivr.net/npm/@excalidraw/excalidraw@0.17.6/dist/';</script>
 <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
@@ -27,12 +43,27 @@
     <button id="copy">复制代码</button>
     <button id="detach">转可编辑</button>
     <button id="clear">重置画板</button>
+    <button id="chat-toggle">对话</button>
     <span id="status"></span>
   </div>
   <textarea id="src" spellcheck="false"></textarea>
-  <div id="err"></div>
+  <div id="err"><span id="err-text"></span> <button id="err-fix">让 AI 修</button></div>
 </div>
 <div id="board"></div>
+<div id="chat">
+  <div id="chat-head">
+    <b>解惑 · 只答不改</b>
+    <button id="chat-clear">清空</button>
+    <button id="chat-close">✕</button>
+  </div>
+  <div id="chat-msgs"></div>
+  <div id="chat-foot">
+    <textarea id="chat-in" placeholder="对这张图有什么不清楚的,直接问…(Enter 发送)"></textarea>
+    <div id="chat-ops">
+      <label><input type="checkbox" id="chat-deep">深想(慢但更聪明)</label>
+    </div>
+  </div>
+</div>
 <script type="module">
   import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
   import elkLayouts from 'https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0/dist/mermaid-layout-elk.esm.min.mjs';
@@ -172,6 +203,7 @@
 
   // ---------- 渲染管线(错误时保留上一张好图) ----------
   let seq = 0, timer, dirty = false;
+  let autoFixTried = false, fixing = false, lastErr = '';
   async function render() {
     const id = 'g' + (++seq);
     try {
@@ -179,12 +211,39 @@
       if (!detached) { api ? applySvg(svg) : pendingSvg = svg; } // 可编辑模式下只做语法校验
       $('err').style.display = 'none';
     } catch (e) {
-      $('err').textContent = e.message;
+      lastErr = e.message;
+      $('err-text').textContent = e.message;
       $('err').style.display = 'block';
       document.getElementById(id)?.remove();
       document.getElementById('d' + id)?.remove();
+      // AI 产物(来自磁盘,非用户手打)渲染就炸 → 自动回炉一次;手动编辑的错误不打扰
+      if (!dirty && !autoFixTried) { autoFixTried = true; aiFix(); }
     }
   }
+
+  // 渲染错误回炉:坏代码+报错 → /fix → AI 最小修复 → 覆写保存重渲
+  async function aiFix() {
+    if (fixing) return;
+    fixing = true;
+    $('err-text').textContent = 'AI 修复中… (' + lastErr.slice(0, 100) + ')';
+    try {
+      const r = await fetch('/fix', {
+        method: 'POST',
+        body: JSON.stringify({ code: $('src').value, error: lastErr }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status);
+      const { code } = await r.json();
+      $('src').value = code;
+      dirty = false;
+      await save();
+      await render();
+    } catch (e) {
+      $('err-text').textContent = lastErr + ' ⇒ AI 修复失败: ' + e.message;
+    } finally {
+      fixing = false;
+    }
+  }
+  $('err-fix').onclick = aiFix;
   $('src').addEventListener('input', () => {
     dirty = true;
     $('status').textContent = '未保存';
@@ -207,6 +266,79 @@
     $('status').textContent = '已复制';
   };
   render();
+
+  // ---------- 解惑对话:只答不改,serve.py /chat 代理,SSE 流式 ----------
+  const chatKey = 'chat:' + file;
+  let chatMsgs = JSON.parse(localStorage.getItem(chatKey) || '[]');
+  let chatBusy = false;
+
+  function bubble(role, text) {
+    const d = document.createElement('div');
+    d.className = 'msg ' + role;
+    d.textContent = text;
+    $('chat-msgs').appendChild(d);
+    $('chat-msgs').scrollTop = $('chat-msgs').scrollHeight;
+    return d;
+  }
+  chatMsgs.forEach(m => bubble(m.role === 'user' ? 'user' : 'ai', m.content));
+
+  $('chat-toggle').onclick = () => $('chat').classList.toggle('open');
+  $('chat-close').onclick = () => $('chat').classList.remove('open');
+  $('chat-clear').onclick = () => {
+    chatMsgs = [];
+    localStorage.removeItem(chatKey);
+    $('chat-msgs').innerHTML = '';
+  };
+
+  async function chatSend() {
+    const q = $('chat-in').value.trim();
+    if (!q || chatBusy) return;
+    chatBusy = true;
+    $('chat-in').value = '';
+    chatMsgs.push({ role: 'user', content: q });
+    bubble('user', q);
+    const deep = $('chat-deep').checked;
+    const aiBubble = bubble('ai', deep ? '深想中…' : '…');
+    try {
+      const resp = await fetch('/chat', {
+        method: 'POST',
+        body: JSON.stringify({ messages: chatMsgs, code: $('src').value, thinking: deep }),
+      });
+      if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).error || 'HTTP ' + resp.status);
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '', answer = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, i).trim();
+          buf = buf.slice(i + 1);
+          if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
+          const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta;
+          if (delta?.content) { // 跳过 reasoning_content,只显示正文
+            answer += delta.content;
+            aiBubble.textContent = answer;
+            $('chat-msgs').scrollTop = $('chat-msgs').scrollHeight;
+          }
+        }
+      }
+      if (!answer) throw new Error('空回答');
+      chatMsgs.push({ role: 'assistant', content: answer });
+      localStorage.setItem(chatKey, JSON.stringify(chatMsgs));
+    } catch (e) {
+      chatMsgs.pop(); // 失败的问题不入历史,可改完重问
+      aiBubble.className = 'msg err';
+      aiBubble.textContent = '出错了: ' + e.message + '(serve.py 在跑吗?)';
+    } finally {
+      chatBusy = false;
+    }
+  }
+  $('chat-in').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); chatSend(); }
+  });
 
   // 轮询磁盘:CLI 先落占位图再让 AI 覆写,这里把成品自动换上来;有未保存编辑时不打扰
   let diskCache = $('src').value;
