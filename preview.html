@@ -8,11 +8,32 @@
   #bar { padding:8px 12px; display:flex; gap:8px; align-items:center; border-bottom:1px solid #e2e8f0; font-size:13px }
   #src { flex:1; border:0; outline:none; padding:12px; font:12px/1.55 "SF Mono",Menlo,monospace; resize:none; color:#1e293b }
   #err { color:#dc2626; font-size:12px; padding:6px 12px; white-space:pre-wrap; display:none; border-top:1px solid #fecaca; background:#fef2f2; max-height:30vh; overflow:auto }
+  #err.fixing { color:#713f12; background:#fef9c3; border-top-color:#eab308 }
+  #err.ok { color:#14532d; background:#dcfce7; border-top-color:#16a34a }
   #board { flex:1; position:relative }
   button, select { font-size:12px; padding:4px 10px; border:1px solid #cbd5e1; border-radius:6px; background:#fff; cursor:pointer }
   button:hover { background:#f1f5f9 }
-  select { max-width:180px; font-weight:600 }
   #status { color:#64748b; margin-left:auto }
+  /* 历史面板:短名 + 时间,点击跳转,✏️ 重命名 */
+  #fwrap { position:relative }
+  #fname { max-width:200px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  #flist { display:none; position:absolute; top:110%; left:0; z-index:30; width:320px; max-height:60vh; overflow:auto;
+           background:#fff; border:1px solid #e2e8f0; border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.12); padding:4px }
+  #flist.open { display:block }
+  .fitem { display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:8px; cursor:pointer }
+  .fitem:hover { background:#f1f5f9 }
+  .fitem.cur { background:#dbeafe }
+  .fmain { flex:1; min-width:0 }
+  .ft { font-weight:600; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .ft.unnamed { color:#94a3b8; font-weight:400 }
+  .fmeta { font-size:11px; color:#94a3b8 }
+  .fedit, .farch { border:none; background:none; cursor:pointer; font-size:13px; opacity:0; padding:2px; white-space:nowrap }
+  .fitem:hover .fedit, .fitem:hover .farch { opacity:.7 }
+  .farch[data-ask] { opacity:1; color:#dc2626; font-size:12px; font-weight:600 }
+  .fitem.arch .ft { color:#94a3b8; font-weight:400 }
+  #farchhead { padding:7px 10px; font-size:12px; color:#64748b; cursor:pointer; border-top:1px solid #e2e8f0; margin-top:4px }
+  #farchhead:hover { background:#f1f5f9 }
+  .fmain input { width:100%; border:1px solid #2563eb; border-radius:6px; padding:2px 6px; font:600 13px inherit; outline:none }
   /* 解惑抽屉 */
   #chat { position:absolute; top:0; right:0; bottom:0; width:380px; background:#fff;
           border-left:1px solid #e2e8f0; box-shadow:-4px 0 16px rgba(0,0,0,.08); z-index:20;
@@ -49,7 +70,10 @@
 <body>
 <div id="left">
   <div id="bar">
-    <select id="fname"></select>
+    <div id="fwrap">
+      <button id="fname"></button>
+      <div id="flist"></div>
+    </div>
     <button id="save">保存 ⌘S</button>
     <button id="copy">复制代码</button>
     <button id="detach">转可编辑</button>
@@ -84,10 +108,134 @@
   const file = new URLSearchParams(location.search).get('f') || 'roadmap.mmd';
   const $ = id => document.getElementById(id);
   document.title = 'mermaidfix · ' + file;
-  const names = await fetch('/list').then(r => r.json()).catch(() => [file]);
-  $('fname').innerHTML = (names.includes(file) ? names : [file, ...names])
-    .map(n => `<option value="${n}" ${n === file ? 'selected' : ''}>${n}</option>`).join('');
-  $('fname').onchange = () => location.href = '?f=' + encodeURIComponent($('fname').value);
+  // ---------- 历史面板:AI 短名 + 跳转 + 重命名(名字存 serve.py 的 names.json) ----------
+  let flist = await fetch('/list').then(r => r.json()).catch(() => []);
+  if (!flist.some(x => x.f === file)) flist.unshift({ f: file, t: '', m: '' });
+  const titleOf = f => (flist.find(x => x.f === f) || {}).t || '';
+  function setHead() {
+    $('fname').textContent = (titleOf(file) || file) + ' ▾';
+    document.title = 'mermaidfix · ' + (titleOf(file) || file);
+  }
+  setHead();
+  async function refreshList() {
+    try { flist = await (await fetch('/list')).json(); } catch {}
+    setHead();
+    if ($('flist').classList.contains('open')) renderFlist();
+  }
+  let showArch = false;
+  function renderFlist() {
+    const row = (x, i) => `
+      <div class="fitem${x.f === file ? ' cur' : ''}${x.a ? ' arch' : ''}" data-i="${i}">
+        <div class="fmain">
+          <div class="ft${x.t ? '' : ' unnamed'}">${escHtml(x.t || x.f)}</div>
+          <div class="fmeta">${escHtml(x.f)} · ${x.m}</div>
+        </div>
+        <button class="fedit" title="重命名 (⌃R)">✏️</button>
+        <button class="farch" title="${x.a ? '恢复' : '归档 (⌃D)'}">${x.a ? '↩️' : '🗄'}</button>
+      </div>`;
+    const act = [], arc = [];
+    flist.forEach((x, i) => (x.a ? arc : act).push(row(x, i)));
+    $('flist').innerHTML = act.join('')
+      + (arc.length ? `<div id="farchhead">${showArch ? '▾' : '▸'} 已归档 ${arc.length} 个</div>` : '')
+      + (showArch ? arc.join('') : '');
+  }
+  async function setArch(f, on) {
+    await fetch('/archive', { method: 'POST', body: JSON.stringify({ f, on }) }).catch(() => {});
+    await refreshList();
+  }
+  let naming = false;
+  async function lazyName() { // 面板打开时给没名字的老文件逐个补名(串行,最多 8 个)
+    if (naming) return;
+    naming = true;
+    try {
+      for (const x of flist.filter(x => !x.t && !x.a && !x.f.endsWith('-raw.mmd')).slice(0, 8)) {
+        const r = await fetch('/autoname', { method: 'POST', body: JSON.stringify({ f: x.f }) }).catch(() => null);
+        if (!r || !r.ok) break;
+        await refreshList();
+      }
+    } finally { naming = false; }
+  }
+  function startRename(i, itemEl) {
+    const x = flist[i], main = itemEl.querySelector('.fmain');
+    main.innerHTML = '<input>';
+    const inp = main.querySelector('input');
+    inp.value = x.t || '';
+    inp.focus(); inp.select();
+    let closed = false;
+    const done = async ok => {
+      if (closed) return;
+      closed = true;
+      if (ok && inp.value.trim() !== (x.t || '')) {
+        await fetch('/rename', { method: 'POST', body: JSON.stringify({ f: x.f, title: inp.value.trim() }) }).catch(() => {});
+        x.t = inp.value.trim();
+        if (x.f === file) setHead();
+      }
+      renderFlist();
+    };
+    inp.onkeydown = ev => {
+      ev.stopPropagation();
+      if (ev.key === 'Enter' && !ev.isComposing) done(true);
+      if (ev.key === 'Escape') done(false);
+    };
+    inp.onblur = () => done(true);
+    inp.onclick = ev => ev.stopPropagation();
+  }
+  $('fname').onclick = e => {
+    e.stopPropagation();
+    renderFlist();
+    $('flist').classList.toggle('open');
+    lazyName();
+  };
+  document.addEventListener('click', () => $('flist').classList.remove('open'));
+  $('flist').onclick = e => {
+    e.stopPropagation();
+    if (e.target.id === 'farchhead') { showArch = !showArch; renderFlist(); return; }
+    const item = e.target.closest('.fitem');
+    if (!item || item.querySelector('input')) return;
+    const i = +item.dataset.i, x = flist[i];
+    if (e.target.closest('.fedit')) return startRename(i, item);
+    const ab = e.target.closest('.farch');
+    if (ab) {
+      if (x.a) return setArch(x.f, false); // 恢复不用确认
+      if (ab.dataset.ask) return setArch(x.f, true); // 第二次点:执行归档
+      ab.dataset.ask = '1';
+      ab.textContent = '确认归档?';
+      setTimeout(() => { ab.removeAttribute('data-ask'); ab.textContent = '🗄'; }, 3000);
+      return;
+    }
+    location.href = '?f=' + encodeURIComponent(x.f);
+  };
+  // ⌃R 重命名当前图 / ⌃D 归档当前图(再按一次确认);输入框里不拦(mac 的 ⌃D 是删字)
+  function flash(msg) {
+    $('status').textContent = msg;
+    clearTimeout(flash.t);
+    flash.t = setTimeout(() => { $('status').textContent = dirty ? '未保存' : ''; }, 3000);
+  }
+  function renameCurrent() {
+    const i = flist.findIndex(x => x.f === file);
+    if (i < 0) return;
+    if (flist[i].a) showArch = true; // 当前图在归档区,展开才有行可编辑
+    renderFlist();
+    $('flist').classList.add('open');
+    startRename(i, $('flist').querySelector('.fitem.cur'));
+  }
+  let archAsk = 0;
+  addEventListener('keydown', e => {
+    if (!e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target.closest?.('input, textarea, [contenteditable="true"]')) return;
+    if (e.key === 'r' || e.key === 'R') { e.preventDefault(); renameCurrent(); return; }
+    if (e.key !== 'd' && e.key !== 'D') return;
+    e.preventDefault();
+    const x = flist.find(x => x.f === file);
+    if (!x || x.a) { flash('这张图已在归档里'); return; }
+    if (Date.now() - archAsk < 3000) {
+      archAsk = 0;
+      setArch(file, true).then(() => flash('已归档「' + (titleOf(file) || file) + '」,历史面板底部可恢复'));
+    } else {
+      archAsk = Date.now();
+      flash('⚠ 再按一次 ⌃D 确认归档当前图');
+    }
+  }, true);
   $('src').value = await (await fetch('./' + file + '?ts=' + Date.now())).text();
 
   // ---------- Excalidraw 画布:mermaid 图 = 锁定底图,笔迹画在上层 ----------
@@ -227,30 +375,88 @@
       $('err').style.display = 'block';
       document.getElementById(id)?.remove();
       document.getElementById('d' + id)?.remove();
-      // AI 产物(来自磁盘,非用户手打)渲染就炸 → 自动回炉一次;手动编辑的错误不打扰
-      if (!dirty && !autoFixTried) { autoFixTried = true; aiFix(); }
+      if (dirty) return; // 手动编辑中的错误不打扰
+      // 第一道防线:确定性清理畸形 linkStyle(数字长龙/尾逗号),瞬时、不劳 AI
+      const cleaned = quickFix($('src').value);
+      if (cleaned !== $('src').value) {
+        $('src').value = cleaned;
+        await save();
+        await render(); // 仍失败会再进 catch,此时 quickFix 无变化,落到 AI 回炉
+        if ($('err').style.display === 'none') {
+          $('err').className = 'ok';
+          $('err-text').textContent = '✅ 已自动清理畸形 linkStyle,已保存';
+          $('err').style.display = 'block';
+          setTimeout(() => { if ($('err').className === 'ok') { $('err').style.display = 'none'; $('err').className = ''; } }, 3000);
+        }
+        return;
+      }
+      // 第二道防线:AI 回炉一次
+      if (!autoFixTried) { autoFixTried = true; aiFix(); }
     }
+  }
+
+  // 确定性清理:AI 偶发把 linkStyle 写成 0,1,…,2496 数字长龙(整行删,纯装饰无语义)或留尾逗号
+  function quickFix(code) {
+    return code.split('\n').filter(l => !(/^\s*linkStyle\s/.test(l) && l.length > 500))
+      .map(l => /^\s*linkStyle\s/.test(l)
+        ? l.replace(/,\s*$/, '').replace(/(\d)\s*,\s+(?=stroke|fill|color)/, '$1 ')
+        : l)
+      .join('\n');
+  }
+
+  // 修复中/失败时画布上放占位图,不留空白黑盒
+  async function fixPlaceholder(label, style) {
+    if (detached || !api) return;
+    try {
+      const { svg } = await mermaid.render('fixph' + Date.now(),
+        'flowchart LR\n  W["' + label + '"]\n  style W ' + style);
+      applySvg(svg);
+    } catch {}
   }
 
   // 渲染错误回炉:坏代码+报错 → /fix → AI 最小修复 → 覆写保存重渲
   async function aiFix() {
     if (fixing) return;
     fixing = true;
-    $('err-text').textContent = 'AI 修复中… (' + lastErr.slice(0, 100) + ')';
+    const bad = $('src').value, badErr = lastErr, t0 = Date.now();
+    $('err').className = 'fixing';
+    $('err-fix').style.display = 'none';
+    const tick = () => $('err-text').textContent =
+      '🔧 AI 修复中… ' + Math.round((Date.now() - t0) / 1000) + 's(已把代码和报错发给 AI,一般 5~20 秒)\n报错: ' + badErr.slice(0, 120);
+    tick();
+    const iv = setInterval(tick, 1000);
+    fixPlaceholder('🔧 AI 修复中… 修好会自动重渲', 'fill:#fef9c3,stroke:#eab308,color:#713f12');
     try {
       const r = await fetch('/fix', {
         method: 'POST',
-        body: JSON.stringify({ code: $('src').value, error: lastErr }),
+        body: JSON.stringify({ code: bad, error: badErr }),
       });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status);
       const { code } = await r.json();
+      clearInterval(iv);
       $('src').value = code;
       dirty = false;
       await save();
       await render();
+      if ($('err').style.display === 'none') { // 修好了:绿条报战果,3 秒后收起
+        const a = bad.split('\n'), b = code.split('\n');
+        const changed = Math.max(a.length, b.length) - a.filter((l, i) => l === b[i]).length;
+        $('err').className = 'ok';
+        $('err-text').textContent = '✅ AI 已修复(改动 ' + changed + ' 行,耗时 ' + Math.round((Date.now() - t0) / 1000) + 's),已保存';
+        $('err').style.display = 'block';
+        setTimeout(() => { if (!fixing && $('err').className === 'ok') { $('err').style.display = 'none'; $('err').className = ''; } }, 3000);
+      } else { // AI 修了一版仍渲染失败:红条如实报,不再自动循环
+        $('err').className = '';
+        $('err-text').textContent = '⚠ AI 修了一版仍有错: ' + lastErr.slice(0, 120) + '\n可再点「让 AI 修」或手动改左侧代码';
+        fixPlaceholder('❌ 仍有渲染错误,见左下角', 'fill:#fee2e2,stroke:#dc2626,color:#7f1d1d');
+      }
     } catch (e) {
-      $('err-text').textContent = lastErr + ' ⇒ AI 修复失败: ' + e.message;
+      $('err').className = '';
+      $('err-text').textContent = badErr + '\n⇒ AI 修复失败: ' + e.message + '(可再点「让 AI 修」重试)';
+      fixPlaceholder('❌ AI 修复失败,可点「让 AI 修」重试', 'fill:#fee2e2,stroke:#dc2626,color:#7f1d1d');
     } finally {
+      clearInterval(iv);
+      $('err-fix').style.display = '';
       fixing = false;
     }
   }
@@ -413,6 +619,7 @@
       if (remote !== diskCache) {
         diskCache = remote;
         if (!dirty) { $('src').value = remote; render(); }
+        refreshList(); // CLI 完成后会顺带起好名,这里把标题也换上
       }
     } catch {}
   }, 2000);

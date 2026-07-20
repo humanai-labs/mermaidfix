@@ -85,6 +85,18 @@ def pick_code(text):
         return text.strip()
     return None
 
+def sanitize(code):
+    """清理 AI 偶发的畸形 linkStyle:数字长龙整行删(纯装饰,删了不影响语义)、尾逗号去掉。"""
+    out = []
+    for l in code.split('\n'):
+        if l.lstrip().startswith('linkStyle'):
+            if len(l) > 500:  # 失控产物:0,1,2,…,2496 这类数列,必崩渲染
+                continue
+            l = re.sub(r',\s*$', '', l)
+            l = re.sub(r'(\d)\s*,\s+(?=stroke|fill|color)', r'\1 ', l)
+        out.append(l)
+    return '\n'.join(out)
+
 def call_ai(cfg, user_content):
     req = urllib.request.Request(
         cfg['endpoint'].rstrip('/') + '/v1/chat/completions',
@@ -186,8 +198,17 @@ def main():
                   '    style E fill:#fee2e2,stroke:#dc2626,color:#7f1d1d\n')
             sys.exit(f'\033[31mmermaid: AI 生成失败: {e}\033[0m')
 
-    write(final)
-    print('mermaid: 完成 ✓', file=sys.stderr)
+    write(sanitize(final))
+    title = ''
+    try:  # AI 起短名(存 serve.py 的 names.json,历史面板里显示);失败不影响出图
+        req = urllib.request.Request(f'http://localhost:{PORT}/autoname',
+                                     data=json.dumps({'f': name}).encode(),
+                                     headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            title = json.load(r).get('title', '')
+    except Exception:
+        pass
+    print(f'mermaid: 完成 ✓' + (f' 「{title}」' if title else ''), file=sys.stderr)
 
 if __name__ == '__main__':
     try:

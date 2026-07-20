@@ -23,27 +23,136 @@ FIX_SYSTEM = '''你是 mermaid 渲染错误修复器。用户给你一段渲染�
 常见错因:linkStyle 索引超出实际边数(边从 0 计数,索引必须小于边总数)、class/style 引用了不存在的节点 ID、label 字符串没用双引号包裹、frontmatter YAML 缩进错误。
 只输出修好的完整 mermaid 代码:不要解释、不要 markdown 围栏。'''
 
+NAME_SYSTEM = '''给这段 mermaid 图起一个 4~12 字的中文短名,概括它讲的主题。
+只输出名字本身:不要引号、不要标点、不要任何解释。'''
+
+NAMES_PATH = os.path.join(ROOT, 'names.json')
+
+def load_names():
+    try:
+        with open(NAMES_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_names(d):
+    with open(NAMES_PATH, 'w', encoding='utf-8') as f:
+        json.dump(d, f, ensure_ascii=False, indent=1)
+
+ARCH_PATH = os.path.join(ROOT, 'archived.json')
+
+def load_arch():
+    try:
+        with open(ARCH_PATH) as f:
+            return set(json.load(f))
+    except Exception:
+        return set()
+
+def save_arch(s):
+    with open(ARCH_PATH, 'w', encoding='utf-8') as f:
+        json.dump(sorted(s), f, ensure_ascii=False, indent=1)
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=ROOT, **kw)
 
-    def do_GET(self):
-        if self.path != '/list':
-            return super().do_GET()
-        files = sorted((f for f in os.listdir(ROOT) if f.endswith('.mmd')),
-                       key=lambda f: os.path.getmtime(os.path.join(ROOT, f)), reverse=True)
-        body = json.dumps(files).encode()
-        self.send_response(200)
+    def _json(self, obj, status=200):
+        body = json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path != '/list':
+            return super().do_GET()
+        import time
+        names, arch = load_names(), load_arch()
+        files = sorted((f for f in os.listdir(ROOT) if f.endswith('.mmd')),
+                       key=lambda f: os.path.getmtime(os.path.join(ROOT, f)), reverse=True)
+        self._json([{'f': f, 't': names.get(f, ''), 'a': f in arch,
+                     'm': time.strftime('%m-%d %H:%M', time.localtime(os.path.getmtime(os.path.join(ROOT, f))))}
+                    for f in files])
+
+    def _archive(self):
+        body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        name = os.path.basename(body.get('f', ''))
+        if not name.endswith('.mmd'):
+            self._json({'error': 'only .mmd'}, 400); return
+        arch = load_arch()
+        (arch.add if body.get('on') else arch.discard)(name)
+        save_arch(arch)
+        self._json({'ok': True})
+
+    def _rename(self):
+        body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        name = os.path.basename(body.get('f', ''))
+        if not name.endswith('.mmd'):
+            self._json({'error': 'only .mmd'}, 400); return
+        names = load_names()
+        title = (body.get('title') or '').strip()
+        if title:
+            names[name] = title
+        else:
+            names.pop(name, None)
+        save_names(names)
+        self._json({'ok': True})
+
+    def _autoname(self):
+        """AI 给图起短名并存 names.json;同名 -raw 原稿顺手挂上「· 原稿」。"""
+        body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        name = os.path.basename(body.get('f', ''))
+        path = os.path.join(ROOT, name)
+        if not name.endswith('.mmd') or not os.path.exists(path):
+            self._json({'error': 'bad file'}, 400); return
+        names = load_names()
+        if names.get(name):  # 已有名字不重起
+            self._json({'title': names[name]}); return
+        with open(path, encoding='utf-8') as f:
+            code = f.read()
+        if 'AI 生成中' in code or 'AI 美化中' in code or 'AI 生成失败' in code:  # CLI 占位图/错误图,等成品再起名
+            self._json({'title': ''}); return
+        with open(os.path.join(ROOT, 'config.json')) as f:
+            cfg = json.load(f)
+        payload = {
+            'model': cfg['model'],
+            'messages': [{'role': 'system', 'content': NAME_SYSTEM},
+                         {'role': 'user', 'content': code[:4000]}],
+            'max_tokens': 50,
+            'enable_thinking': False,
+        }
+        req = urllib.request.Request(
+            cfg['endpoint'].rstrip('/') + '/v1/chat/completions',
+            data=json.dumps(payload).encode(),
+            headers={'Authorization': 'Bearer ' + cfg['key'],
+                     'Content-Type': 'application/json'})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = json.load(r)
+            title = data['choices'][0]['message']['content'].strip().strip('「」"\'').split('\n')[0][:24]
+        except Exception as e:
+            self._json({'error': str(e)[:200]}, 500); return
+        if not title:
+            self._json({'error': 'empty title'}, 500); return
+        names[name] = title
+        raw = name[:-4] + '-raw.mmd'
+        if os.path.exists(os.path.join(ROOT, raw)) and not names.get(raw):
+            names[raw] = title + ' · 原稿'
+        save_names(names)
+        self._json({'title': title})
 
     def do_POST(self):
         if self.path == '/chat':
             return self._chat()
         if self.path == '/fix':
             return self._fix()
+        if self.path == '/rename':
+            return self._rename()
+        if self.path == '/archive':
+            return self._archive()
+        if self.path == '/autoname':
+            return self._autoname()
         if self.path != '/save':
             self.send_error(404); return
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
