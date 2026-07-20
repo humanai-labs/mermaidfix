@@ -21,10 +21,21 @@
   #chat-head { padding:10px 14px; border-bottom:1px solid #e2e8f0; display:flex; align-items:center; gap:8px; font-size:13px }
   #chat-head b { margin-right:auto }
   #chat-msgs { flex:1; overflow:auto; padding:12px; display:flex; flex-direction:column; gap:10px }
-  .msg { max-width:88%; padding:8px 11px; border-radius:10px; font-size:13px; line-height:1.6; white-space:pre-wrap; word-break:break-word }
-  .msg.user { align-self:flex-end; background:#dbeafe; color:#1e3a8a }
+  .msg { max-width:88%; padding:8px 11px; border-radius:10px; font-size:13px; line-height:1.65; word-break:break-word; overflow-wrap:anywhere }
+  .msg.user { align-self:flex-end; background:#dbeafe; color:#1e3a8a; white-space:pre-wrap }
   .msg.ai { align-self:flex-start; background:#f1f5f9; color:#1e293b }
-  .msg.err { align-self:flex-start; background:#fef2f2; color:#dc2626; border:1px solid #fecaca }
+  .msg.err { align-self:flex-start; background:#fef2f2; color:#dc2626; border:1px solid #fecaca; white-space:pre-wrap }
+  /* AI 气泡内的 markdown 渲染样式 */
+  .msg p { margin:0 0 7px } .msg :last-child { margin-bottom:0 }
+  .msg ul, .msg ol { margin:0 0 7px; padding-left:18px }
+  .msg li { margin:3px 0 }
+  .msg code { background:#e2e8f0; border-radius:4px; padding:1px 5px; font:12px ui-monospace,SFMono-Regular,Menlo,monospace }
+  .msg pre { background:#0f172a; color:#e2e8f0; border-radius:8px; padding:8px 10px; margin:0 0 7px; overflow-x:auto; font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre }
+  .msg hr { border:none; border-top:1px solid #cbd5e1; margin:8px 0 }
+  .msg table { border-collapse:collapse; margin:0 0 7px; display:block; overflow-x:auto; max-width:100% }
+  .msg th, .msg td { border:1px solid #cbd5e1; padding:3px 8px; font-size:12px; text-align:left; white-space:nowrap }
+  .msg td { white-space:normal }
+  .msg th { background:#e2e8f0 }
   #chat-foot { border-top:1px solid #e2e8f0; padding:10px 12px; display:flex; flex-direction:column; gap:6px }
   #chat-in { border:1px solid #cbd5e1; border-radius:8px; padding:8px 10px; font:13px/1.5 inherit; resize:none; min-height:38px; max-height:120px; outline:none }
   #chat-ops { display:flex; align-items:center; gap:10px; font-size:12px; color:#475569 }
@@ -272,10 +283,64 @@
   let chatMsgs = JSON.parse(localStorage.getItem(chatKey) || '[]');
   let chatBusy = false;
 
+  // 迷你 markdown 渲染:只认 AI 回答会用到的记号(粗体/行内代码/代码块/列表/标题)。
+  // 先整体转义 HTML 再做转换,AI 文本不会注入;不引 CDN 库。
+  const escHtml = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const mdInline = s => escHtml(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  function mdHtml(text) {
+    const lines = text.split('\n'), out = [];
+    let i = 0;
+    while (i < lines.length) {
+      const l = lines[i];
+      if (/^```/.test(l)) {
+        const buf = []; i++;
+        while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
+        i++;
+        out.push('<pre>' + escHtml(buf.join('\n')) + '</pre>');
+      } else if (/^\s*[-*]\s+/.test(l)) {
+        const items = [];
+        while (i < lines.length && /^\s*[-*]\s+/.test(lines[i]))
+          items.push('<li>' + mdInline(lines[i++].replace(/^\s*[-*]\s+/, '')) + '</li>');
+        out.push('<ul>' + items.join('') + '</ul>');
+      } else if (/^\s*\d+[.、]\s*\S/.test(l)) {
+        const items = [];
+        while (i < lines.length && /^\s*\d+[.、]\s*\S/.test(lines[i]))
+          items.push('<li>' + mdInline(lines[i++].replace(/^\s*\d+[.、]\s*/, '')) + '</li>');
+        out.push('<ol>' + items.join('') + '</ol>');
+      } else if (/^#{1,4}\s+/.test(l)) {
+        out.push('<p><b>' + mdInline(l.replace(/^#{1,4}\s+/, '')) + '</b></p>'); i++;
+      } else if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(l)) {
+        out.push('<hr>'); i++;
+      } else if (/^\s*\|/.test(l)) {
+        const rows = [];
+        while (i < lines.length && /^\s*\|/.test(lines[i]))
+          rows.push(lines[i++].trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim()));
+        const sep = rows.length > 1 && rows[1].every(c => /^:?-+:?$/.test(c));
+        out.push('<table>' + rows.map((cells, r) => {
+          if (sep && r === 1) return '';
+          const tag = sep && r === 0 ? 'th' : 'td';
+          return '<tr>' + cells.map(c => '<' + tag + '>' + mdInline(c) + '</' + tag + '>').join('') + '</tr>';
+        }).join('') + '</table>');
+      } else if (!l.trim()) {
+        i++;
+      } else {
+        const buf = [];
+        while (i < lines.length && lines[i].trim() &&
+               !/^(```|#{1,4}\s|\s*[-*]\s+|\s*\d+[.、]\s*\S|\s*\||\s*(-{3,}|\*{3,}|_{3,})\s*$)/.test(lines[i]))
+          buf.push(mdInline(lines[i++]));
+        out.push('<p>' + buf.join('<br>') + '</p>');
+      }
+    }
+    return out.join('');
+  }
+
   function bubble(role, text) {
     const d = document.createElement('div');
     d.className = 'msg ' + role;
-    d.textContent = text;
+    if (role === 'ai') d.innerHTML = mdHtml(text);
+    else d.textContent = text;
     $('chat-msgs').appendChild(d);
     $('chat-msgs').scrollTop = $('chat-msgs').scrollHeight;
     return d;
@@ -320,7 +385,7 @@
           const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta;
           if (delta?.content) { // 跳过 reasoning_content,只显示正文
             answer += delta.content;
-            aiBubble.textContent = answer;
+            aiBubble.innerHTML = mdHtml(answer); // 流式期间实时渲染,未闭合记号收尾时自愈
             $('chat-msgs').scrollTop = $('chat-msgs').scrollHeight;
           }
         }
